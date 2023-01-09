@@ -25,5 +25,9 @@ features = [
     "FileList",
     "File",
     "FileReader",
-    "console"
+        "Worker",
+
+    "console",
+    "CustomEvent",
+    "CustomEventInit",
 ]

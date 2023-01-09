@@ -1,14 +1,32 @@
+mod file_info;
+
 use wasm_bindgen::prelude::*;
 use std::io::{BufReader};
 use calamine::{Reader, DataType, Xlsx, open_workbook_from_rs};
 use std::io::Cursor;
-use web_sys::{FileReader};
+use std::io::Seek;
+use std::io::Read;
+use web_sys::{Worker, FileReader, CustomEvent, CustomEventInit, window};
 use js_sys::{Uint8Array};
 use serde::{Serialize, Deserialize};
 use gloo_utils::format::JsValueSerdeExt;
 use chrono::{ NaiveDateTime, NaiveDate};
+use file_info::{FileInfo};
 
 static mut a:i32 = 10;
+
+fn send_event(){
+    let event = CustomEvent::new_with_event_init_dict(
+    "clear_invoice_update",
+    CustomEventInit::new()
+        .bubbles(true)
+        .cancelable(true),
+    ).unwrap();
+    let document = window().unwrap().document().expect("expecting a document on window");
+    document
+    .dispatch_event(&event);
+}
+
 
 #[wasm_bindgen]
 pub fn to_get()-> JsValue {
@@ -35,6 +53,7 @@ pub enum MovementOperation {
     UNDEFINED_FIXED_INCOME
 }
 
+
 #[derive(Serialize, Deserialize)]
 pub struct Movement {
     pub row: i16,
@@ -49,6 +68,34 @@ pub struct Movement {
     pub price_unit: f64,
     pub price_total:f64,
     pub origin: String
+}
+
+#[wasm_bindgen]
+pub fn is_movement_file(uint8:Uint8Array)-> bool {
+    let array = Uint8Array::new(&uint8);
+    let bytes: Vec<u8> = array.to_vec();
+    let c = Cursor::new(bytes);
+    let mut excel: Xlsx<_> = match open_workbook_from_rs(c){
+        Ok(file)=>file,
+        Err(e)=> return false
+    };
+    if let Some(Ok(r)) = excel.worksheet_range("Movimentação") {
+        // Entrada/Saída	Data	Movimentação	Produto	Instituição	Quantidade	Preço unitário	Valor da Operação
+        for row in r.rows() {
+            let movement_type = match row[0].get_string(){
+                Some(str)=>str.to_string(),
+                None => return false
+            };
+            if movement_type.contains("Entrada") {  
+                return true;
+            } else{
+                return false;
+            }
+        }
+        return false;
+    } else{
+        return false;
+    }
 }
 
 #[wasm_bindgen]
@@ -85,7 +132,37 @@ pub fn process_movement_file(fileName:String, file:FileReader)-> JsValue {
             }
         }
     }
+    send_event();
     return serde_wasm_bindgen::to_value(&movements).unwrap();
+}
+
+#[derive(Debug,Serialize, Deserialize)]
+pub struct MovementFileInfoResponse{
+    pub event:String,
+    pub data:FileInfo,
+}
+#[wasm_bindgen]
+pub fn get_moviment_file_info_using_event(worker:Worker, id:i32, uint8:Uint8Array) {
+    let mut file_info = FileInfo{
+        numOfRows:0,
+        name:"".to_string(),
+        id:id
+    };
+    let array = Uint8Array::new(&uint8);
+    let bytes: Vec<u8> = array.to_vec();
+    let c = Cursor::new(bytes);
+    let mut excel: Xlsx<_> = match open_workbook_from_rs(c){
+        Ok(file)=>file,
+        Err(e)=> panic!("{}",e)
+    };
+    get_info_from_excel(&mut file_info, &mut excel);
+
+    let response = MovementFileInfoResponse{
+        event: "MOVEMENT_FILE_INFO".to_string(),
+        data:file_info
+    };
+    let value = serde_wasm_bindgen::to_value(&response).unwrap();
+    worker.post_message(&value);
 }
 
 fn row_to_movement(row:&[DataType], m:&mut Movement){
@@ -121,6 +198,13 @@ fn row_to_movement(row:&[DataType], m:&mut Movement){
         Some(f) => m.price_total = f,
         None =>{}
     };
+}
+
+pub fn get_info_from_excel<RS>(file_info:&mut FileInfo, excel:&mut Xlsx<RS>)  where RS: Seek, RS: std::io::Read{
+    if let Some(Ok(res)) = excel.worksheet_range("Movimentação") {
+        let rows = res.rows();
+        file_info.numOfRows = rows.len() as i32;
+    }
 }
 
 #[cfg(test)]
